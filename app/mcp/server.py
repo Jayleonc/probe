@@ -17,6 +17,25 @@ from app.services import log_service
 mcp = FastMCP("probe")
 
 
+def _with_token_stats(json_str: str) -> str:
+    """给返回的 JSON 注入 token 用量估算，方便观察每次查询的开销。
+
+    估算规则（Claude tokenizer 近似）：
+    - 中文：约 1 token / 1.5 字符
+    - 英文/代码：约 1 token / 4 字符
+    - 混合文本取中间值：字符数 / 2.5
+    """
+    char_count = len(json_str)
+    estimated_tokens = int(char_count / 2.5)
+
+    data = json.loads(json_str)
+    data["_token_stats"] = {
+        "response_chars": char_count,
+        "estimated_tokens": estimated_tokens,
+    }
+    return json.dumps(data, ensure_ascii=False)
+
+
 # ============================================================
 # Tools —— AI Agent 可调用的排障工具
 # ============================================================
@@ -38,7 +57,7 @@ async def search_by_request_id(
         back_hours: 往前搜索的小时数，0=默认范围，增大可搜索更早的日志
     """
     result = await log_service.search_by_request_id(request_id, back_hours)
-    return json.dumps(result.model_dump(), ensure_ascii=False)
+    return _with_token_stats(json.dumps(result.model_dump(), ensure_ascii=False))
 
 
 @mcp.tool(name="search_logs")
@@ -61,7 +80,7 @@ async def search_logs(
         limit: 最大返回条数，默认20，上限50
     """
     result = await log_service.search_logs(keyword, start_time, end_time, level, limit)
-    return json.dumps(result.model_dump(), ensure_ascii=False)
+    return _with_token_stats(json.dumps(result.model_dump(), ensure_ascii=False))
 
 
 @mcp.tool(name="tail_errors")
@@ -80,14 +99,14 @@ async def tail_errors(
         limit: 最大返回条数，默认30，上限50
     """
     result = await log_service.tail_errors(hours_back, keyword, limit)
-    return json.dumps(result.model_dump(), ensure_ascii=False)
+    return _with_token_stats(json.dumps(result.model_dump(), ensure_ascii=False))
 
 
 @mcp.tool(name="list_services")
 async def list_services() -> str:
     """列出服务器上所有由 supervisor 管理的服务。用于了解当前有哪些服务在跑。"""
     result = log_service.get_services()
-    return json.dumps(result, ensure_ascii=False)
+    return _with_token_stats(json.dumps(result, ensure_ascii=False))
 
 
 @mcp.tool(name="context_around_match")
@@ -108,7 +127,7 @@ async def context_around_match(
         after: 向后取多少行，默认10，上限50
     """
     result = log_service.get_context(file, line_number, before, after)
-    return json.dumps(result, ensure_ascii=False)
+    return _with_token_stats(json.dumps(result, ensure_ascii=False))
 
 
 # ============================================================
