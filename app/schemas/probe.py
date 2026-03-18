@@ -40,10 +40,13 @@ class TraceSummary(BaseModel):
     """请求链路的摘要视图 —— 让 Agent 快速了解全貌，无需读完所有日志"""
     request_id: str
     total_lines: int           # 原始日志总行数
+    time_range: str            # 搜到的日志时间范围，如 "12:12:52 ~ 12:12:55"
+    searched_hours: int        # 本次搜索的 back_hours 参数值
     services: list[str]        # 经过的服务列表（去重有序）
     error_count: int
     warn_count: int
     errors: list[TraceItem]    # 所有 ERR 日志（完整保留）
     warns: list[TraceItem]     # 所有 WAR 日志（完整保留）
     timeline: list[TraceItem]  # 全链路精简时间线（INF/DBG 级别）
+    hint: str = ""             # 给 Agent 的智能提示（如结果可能不完整时提醒扩大搜索）
     next_actions: list[str] = []

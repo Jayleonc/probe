@@ -116,6 +116,8 @@ async def search_by_request_id(request_id: str, back_hours: int = 0) -> TraceSum
     - errors/warns: 完整保留，Agent 第一时间看到问题
     - timeline: 全链路精简时间线，快速了解流转过程
     - services: 经过的服务列表
+    - time_range: 搜到的日志时间范围（帮助判断是否找对了）
+    - hint: 当结果可能不完整时给出提示
     """
     params = {"request_id": request_id, "back_hours": back_hours}
     try:
@@ -128,6 +130,7 @@ async def search_by_request_id(request_id: str, back_hours: int = 0) -> TraceSum
         warns: list[TraceItem] = []
         timeline: list[TraceItem] = []
         services_seen: list[str] = []  # 保持顺序的去重列表
+        timestamps: list[str] = []     # 收集所有时间戳，用于计算时间范围
 
         for line in lines:
             parsed = parse_log_line(line)
@@ -135,6 +138,7 @@ async def search_by_request_id(request_id: str, back_hours: int = 0) -> TraceSum
                 continue
 
             item = _parsed_to_trace_item(parsed)
+            timestamps.append(parsed["timestamp"])
 
             # 记录服务出现顺序
             if item.service not in services_seen:
@@ -147,21 +151,77 @@ async def search_by_request_id(request_id: str, back_hours: int = 0) -> TraceSum
             else:
                 timeline.append(item)
 
+        # 计算时间范围
+        if timestamps:
+            time_range = f"{timestamps[0]} ~ {timestamps[-1]}"
+        else:
+            time_range = "无"
+
+        # 生成智能提示：帮助 Agent 判断是否需要扩大搜索
+        hint = _build_search_hint(total, back_hours, services_seen, errors, time_range)
+
         _audit("search_by_request_id", params, total, False)
         return TraceSummary(
             request_id=request_id,
             total_lines=total,
+            time_range=time_range,
+            searched_hours=back_hours,
             services=services_seen,
             error_count=len(errors),
             warn_count=len(warns),
             errors=errors,
             warns=warns,
             timeline=timeline,
+            hint=hint,
             next_actions=["search_logs", "context_around_match"],
         )
     except Exception as e:
         _audit("search_by_request_id", params, 0, False, str(e))
         raise
+
+
+def _build_search_hint(
+    total: int, back_hours: int, services: list[str], errors: list, time_range: str,
+) -> str:
+    """
+    根据搜索结果生成智能提示，引导 Agent 做出正确决策。
+
+    典型的完整链路通常包含 20+ 行、3+ 个服务。
+    如果结果太少，很可能搜索范围不够，或者搜到了不相关的同名请求。
+    """
+    hints: list[str] = []
+
+    if total == 0:
+        hints.append(
+            f"[需要用户确认] 未找到任何日志（back_hours={back_hours}）。"
+            "请询问用户这个请求大概发生在什么时间，然后用对应的 back_hours 重新搜索。"
+            "例如：用户说'今天上午' → back_hours=12，'昨天' → back_hours=24。"
+        )
+
+    elif total < 10 and len(services) <= 2 and back_hours < 8:
+        hints.append(
+            f"[结果可能不完整] 仅找到 {total} 行日志、{len(services)} 个服务，"
+            f"时间在 {time_range}。正常的微服务链路通常有 20+ 行、3+ 个服务。"
+            "这可能不是用户要找的请求。请询问用户："
+            f"'找到的日志时间是 {time_range}，是这个时间段的请求吗？如果不是，请告诉我大概的时间，我扩大范围重新搜索。'"
+        )
+
+    # 有很多重试/错误 —— 提醒关注 hlopen 服务
+    if errors:
+        error_services = set()
+        for e in errors:
+            if "404" in e.message or "Http 404" in e.message:
+                # 从消息中提取目标服务
+                for keyword in ["hlopen", "hlfront", "wwrpabase", "jzadapter"]:
+                    if keyword in e.message:
+                        error_services.add(keyword)
+        if error_services:
+            hints.append(
+                f"发现 HTTP 404 错误，涉及服务: {', '.join(error_services)}。"
+                "这些服务的接口可能未注册或服务未部署。"
+            )
+
+    return " ".join(hints)
 
 
 async def search_logs(

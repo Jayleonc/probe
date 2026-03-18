@@ -46,15 +46,20 @@ async def search_by_request_id(
     back_hours: int = 0,
 ) -> str:
     """【最常用】根据请求ID追踪完整链路。返回结构化摘要，包含：
+    - time_range: 搜到的日志时间范围（务必检查是否符合预期时间）
     - services: 请求经过的服务列表
     - errors/warns: 所有错误和警告（完整保留）
     - timeline: 全链路时间线（INF/DBG 级别的精简视图）
+    - hint: 当结果可能不完整时的智能提示
 
-    如果 errors 不为空，说明链路有问题，可结合 search_logs 进一步排查。
+    【重要】请务必检查返回的 hint 字段：
+    - 如果 hint 以 [需要用户确认] 或 [结果可能不完整] 开头，你必须按提示行动
+    - 向用户确认时间（"大概什么时候的？今天上午？昨天？"），然后用合适的 back_hours 重搜
+    - 同一个 request_id 在不同时间可能匹配到不同请求，注意核对 time_range 是否符合预期
 
     Args:
         request_id: 请求ID，如 '7n8dpbl2SRiZmnpytX4A' 或 'SnWCax0iwhiYZPO4RNsA.NWtYBR'
-        back_hours: 往前搜索的小时数，0=默认范围，增大可搜索更早的日志
+        back_hours: 往前搜索的小时数。0=默认（仅最近几小时），8=搜最近8小时，24=全天。如果用户提到的事件发生在较早时间，请直接设置较大值
     """
     result = await log_service.search_by_request_id(request_id, back_hours)
     return _with_token_stats(json.dumps(result.model_dump(), ensure_ascii=False))
