@@ -1,25 +1,31 @@
 """
-MCP SSE 传输层
+MCP 传输层
 
-将 FastMCP server 通过 SSE (Server-Sent Events) 协议暴露给客户端。
-客户端通过 GET /mcp/sse 建立 SSE 长连接，通过 POST /mcp/messages/ 发送请求。
+同时支持两种传输协议：
+1. SSE (Server-Sent Events) —— 当前 Claude Code 使用的方式
+   - GET  /mcp/sse         建立 SSE 长连接
+   - POST /mcp/messages/   发送 MCP 消息
+2. StreamableHTTP —— 新一代协议，备用
+   - POST/GET/DELETE /mcp/stream  统一端点
 """
 
 from fastapi import APIRouter, Request
 from mcp.server.sse import SseServerTransport
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from starlette.responses import Response
 
 from app.mcp.server import mcp
 
-router = APIRouter(tags=["MCP SSE"])
+router = APIRouter(tags=["MCP"])
 
-# 注意：路径末尾带斜杠，与 FastAPI mount 路径保持一致，避免 307 重定向导致初始化时序错乱
+# ---- SSE 传输 ----
+# 路径末尾带斜杠，与 FastAPI mount 路径一致，避免 307 重定向
 sse_transport = SseServerTransport("/mcp/messages/")
 
 
 @router.get("/sse")
 async def handle_sse(request: Request):
-    """SSE 连接端点，客户端通过此接口建立长连接"""
+    """SSE 连接端点"""
     server = mcp._mcp_server
 
     async with sse_transport.connect_sse(request.scope, request.receive, request._send) as streams:
@@ -34,3 +40,17 @@ async def handle_sse(request: Request):
 
 # POST 消息处理器，挂载到 /mcp/messages/
 messages_app = sse_transport.handle_post_message
+
+# ---- StreamableHTTP 传输（备用）----
+session_manager = StreamableHTTPSessionManager(
+    app=mcp._mcp_server,
+    json_response=True,
+)
+
+
+@router.api_route("/stream", methods=["GET", "POST", "DELETE"])
+async def handle_streamable_http(request: Request):
+    """StreamableHTTP 端点（备用）"""
+    await session_manager.handle_request(
+        request.scope, request.receive, request._send
+    )
