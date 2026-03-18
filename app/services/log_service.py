@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from app.adapters import file_adapter, glog_adapter
 from app.core.config import settings
 from app.schemas.probe import LogItem, SearchResult, TraceItem, TraceSummary
-from app.utils.log_parser import parse_log_line, _truncate
+from app.utils.log_parser import parse_log_line, _truncate, _strip_rpc_body
 from app.utils.redact import redact_text
 
 
@@ -96,14 +96,23 @@ def _grep_results_to_items(results: list[tuple[str, int, str]]) -> list[LogItem]
     return items
 
 
-def _parsed_to_trace_item(parsed: dict) -> TraceItem:
-    """将 parse_log_line 的结果转为精简的 TraceItem"""
+def _parsed_to_trace_item(parsed: dict, compact_max: int = 0) -> TraceItem:
+    """将 parse_log_line 的结果转为精简的 TraceItem。
+
+    compact_max > 0 时对 message 做压缩：
+    - 去掉 RPC 日志中的 req/rsp body（只留占位符）
+    - 截断到 compact_max 字符
+    """
+    msg = parsed["message"]
+    if compact_max > 0:
+        msg = _strip_rpc_body(msg)
+        msg = _truncate(msg, max_len=compact_max)
     return TraceItem(
         timestamp=parsed["timestamp"],
         level=parsed["level"],
         service=parsed["process"],
         source=parsed["source"],
-        message=_maybe_redact(parsed["message"]),
+        message=_maybe_redact(msg),
         request_id=parsed["request_id"],
     )
 
@@ -137,25 +146,41 @@ async def search_by_request_id(request_id: str, back_hours: int = 0) -> TraceSum
             if not parsed:
                 continue
 
-            item = _parsed_to_trace_item(parsed)
             timestamps.append(parsed["timestamp"])
 
             # 记录服务出现顺序
-            if item.service not in services_seen:
-                services_seen.append(item.service)
+            svc = parsed["process"]
+            if svc not in services_seen:
+                services_seen.append(svc)
 
             if parsed["level"] == "ERR":
-                errors.append(item)
+                # 错误日志：去掉 req/rsp body，但保留更多文本（300字）
+                errors.append(_parsed_to_trace_item(parsed, compact_max=300))
             elif parsed["level"] == "WAR":
-                warns.append(item)
+                warns.append(_parsed_to_trace_item(parsed, compact_max=300))
             else:
-                timeline.append(item)
+                # timeline：去掉 req/rsp body，截断到 150 字符
+                timeline.append(_parsed_to_trace_item(parsed, compact_max=150))
 
         # 计算时间范围
         if timestamps:
             time_range = f"{timestamps[0]} ~ {timestamps[-1]}"
         else:
             time_range = "无"
+
+        # 限制 timeline 条数，保留头尾各 15 条，中间省略
+        max_timeline = 30
+        timeline_truncated = False
+        if len(timeline) > max_timeline:
+            half = max_timeline // 2
+            omitted = len(timeline) - max_timeline
+            head = timeline[:half]
+            tail = timeline[-half:]
+            timeline = head + [TraceItem(
+                timestamp="", level="INF", service="---",
+                source="", message=f"[省略中间 {omitted} 条 INF/DBG 日志]",
+            )] + tail
+            timeline_truncated = True
 
         # 生成智能提示：帮助 Agent 判断是否需要扩大搜索
         hint = _build_search_hint(total, back_hours, services_seen, errors, time_range)

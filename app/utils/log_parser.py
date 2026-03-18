@@ -25,12 +25,57 @@ LOG_PATTERN = re.compile(
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
 
-def _truncate(text: str) -> str:
+def _truncate(text: str, max_len: int = 0) -> str:
     """截断过长的文本，避免 req/resp body 等超长内容浪费 token"""
-    max_len = settings.limits.max_line_length
+    if max_len <= 0:
+        max_len = settings.limits.max_line_length
     if len(text) <= max_len:
         return text
     return text[:max_len] + f"...[截断, 原始 {len(text)} 字符]"
+
+
+def _strip_rpc_body(text: str) -> str:
+    """
+    从 RPC 日志消息中去掉 req {...} 和 rsp {...} 的具体内容，
+    只保留 req{...} / rsp{...} 的占位标记和其他关键字段（path, code, time）。
+
+    示例输入:
+      ctx xxx path /hlopen/CsContactApplyEvent code -21 req {"big":"json"} rsp {"also":"big"} time 5
+    示例输出:
+      ctx xxx path /hlopen/CsContactApplyEvent code -21 req{..} rsp{..} time 5
+    """
+    if 'req ' not in text and 'rsp ' not in text:
+        return text
+
+    result = []
+    i = 0
+    length = len(text)
+
+    while i < length:
+        # 检查是否匹配 req { 或 rsp {
+        if i < length - 4 and text[i:i+4] in ('req ', 'rsp '):
+            tag = text[i:i+3]  # 'req' or 'rsp'
+            j = i + 4
+            # 跳过空白
+            while j < length and text[j] == ' ':
+                j += 1
+            if j < length and text[j] == '{':
+                # 用花括号计数找到匹配的 }
+                depth = 1
+                k = j + 1
+                while k < length and depth > 0:
+                    if text[k] == '{':
+                        depth += 1
+                    elif text[k] == '}':
+                        depth -= 1
+                    k += 1
+                result.append(f'{tag}{{..}}')
+                i = k
+                continue
+        result.append(text[i])
+        i += 1
+
+    return ''.join(result)
 
 
 def _clean_ansi(text: str) -> str:
