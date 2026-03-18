@@ -30,7 +30,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health_router)
     app.include_router(mcp_sse_router, prefix="/mcp")
-    app.mount("/mcp/messages", mcp_sse_messages_app)
+    app.mount("/mcp/messages/", mcp_sse_messages_app)
 
     return app
 
