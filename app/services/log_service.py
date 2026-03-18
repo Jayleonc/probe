@@ -5,6 +5,7 @@
 """
 
 import json
+import re
 import sys
 from datetime import datetime, timedelta
 
@@ -208,8 +209,8 @@ async def search_by_request_id(
             if svc not in services_seen:
                 services_seen.append(svc)
 
-            if parsed["level"] == "ERR":
-                # 错误日志：去掉 req/rsp body，但保留更多文本（300字）
+            if parsed["level"] in ("ERR", "IMP"):
+                # IMP = Important，比 ERR 更严重（如 final fail / message drop）
                 errors.append(_parsed_to_trace_item(parsed, compact_max=300))
             elif parsed["level"] == "WAR":
                 warns.append(_parsed_to_trace_item(parsed, compact_max=300))
@@ -292,20 +293,36 @@ def _build_search_hint(
             "先告诉用户找到的时间范围，确认是否正确。"
         )
 
-    # 有很多重试/错误 —— 提醒关注 hlopen 服务
     if errors:
-        error_services = set()
+        # 检测消息最终被丢弃（最严重的结果）
+        dropped_topics = []
         for e in errors:
-            if "404" in e.message or "Http 404" in e.message:
-                # 从消息中提取目标服务
-                for keyword in ["hlopen", "hlfront", "wwrpabase", "jzadapter"]:
-                    if keyword in e.message:
-                        error_services.add(keyword)
-        if error_services:
+            msg = e.message
+            if "touch max retry count, drop" in msg or "final fail" in msg:
+                # 提取 topic 名（如 jzadapter_event_cb.hlopen_contact_apply）
+                # 格式：consumeMsg <topic>: msg ... / final fail: <topic>: ...
+                m = re.search(r'(?:consumeMsg|final fail:)\s+([\w.]+)', msg)
+                topic = m.group(1) if m else "unknown"
+                dropped_topics.append(topic)
+
+        if dropped_topics:
             hints.append(
-                f"发现 HTTP 404 错误，涉及服务: {', '.join(error_services)}。"
-                "这些服务的接口可能未注册或服务未部署。"
+                f"[消息丢弃] 以下消息队列的消息已达到最大重试次数并被丢弃: {', '.join(set(dropped_topics))}。"
+                "这是本次请求最严重的问题，优先分析这些 ERR，其他 ERR 可能只是中间步骤的日志，不是根因。"
             )
+        else:
+            # 检测 404 错误涉及的服务
+            error_services = set()
+            for e in errors:
+                if "404" in e.message or "Http 404" in e.message:
+                    for keyword in ["hlopen", "hlfront", "wwrpabase", "jzadapter"]:
+                        if keyword in e.message:
+                            error_services.add(keyword)
+            if error_services:
+                hints.append(
+                    f"发现 HTTP 404 错误，涉及服务: {', '.join(error_services)}。"
+                    "这些服务的接口可能未注册或服务未部署。"
+                )
 
     return " ".join(hints)
 

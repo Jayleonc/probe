@@ -15,7 +15,7 @@ LOG_PATTERN = re.compile(
     r"(\d{2}-\d{2}T[\d:.]+)\s+"           # 时间戳 MM-DDThh:mm:ss.ssss
     r"(?:<([^>]+)>\s+)?"                   # 可选的 <request_id>
     r"(?:\x1b\[\d+m)?"                     # 可选的 ANSI 颜色码开头
-    r"(INF|WAR|ERR|DBG)\s+"               # 日志级别
+    r"(INF|WAR|ERR|DBG|IMP)\s+"            # 日志级别（IMP=Important，比ERR更严重的最终失败）
     r"(\S+)"                               # 来源 file:line:func
     r"(?:\x1b\[0m)?"                       # 可选的 ANSI 颜色码结尾
     r"\s+(.*)"                             # 消息正文
