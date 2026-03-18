@@ -117,7 +117,58 @@ def _parsed_to_trace_item(parsed: dict, compact_max: int = 0) -> TraceItem:
     )
 
 
-async def search_by_request_id(request_id: str, back_hours: int = 0) -> TraceSummary:
+def _calc_back_hours(hint_time: str) -> int:
+    """
+    根据用户提供的时间字符串计算 back_hours。
+
+    支持格式：
+    - "17:12:40" / "17:12" — 今天的某个时间
+    - "2026-03-18T17:12:40" / "2026-03-18 17:12:40" — 完整时间
+    - "03-18T17:12:40" — 日志格式的时间
+
+    返回：向前搜索的小时数（向上取整，+1 小时缓冲）
+    """
+    now = datetime.now()
+    hint = hint_time.strip()
+
+    target: datetime | None = None
+
+    # 尝试各种格式
+    for fmt in (
+        "%H:%M:%S", "%H:%M",
+        "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M",
+        "%m-%dT%H:%M:%S", "%m-%dT%H:%M",
+    ):
+        try:
+            parsed = datetime.strptime(hint, fmt)
+            # 补全缺失的日期/年份
+            target = parsed.replace(
+                year=now.year if parsed.year == 1900 else parsed.year,
+                month=now.month if fmt.startswith("%H") else parsed.month,
+                day=now.day if fmt.startswith("%H") else parsed.day,
+            )
+            break
+        except ValueError:
+            continue
+
+    if target is None:
+        return 0  # 解析失败，用默认值
+
+    diff_hours = (now - target).total_seconds() / 3600
+    if diff_hours < 0:
+        # 用户说的时间在未来？可能是昨天的同一时间
+        target = target - timedelta(days=1)
+        diff_hours = (now - target).total_seconds() / 3600
+
+    # 向上取整 + 1 小时缓冲，最少 1
+    return max(1, int(diff_hours) + 1)
+
+
+async def search_by_request_id(
+    request_id: str,
+    back_hours: int = 0,
+    hint_time: str | None = None,
+) -> TraceSummary:
     """
     按 request_id 搜索完整请求链路。
 
@@ -128,7 +179,11 @@ async def search_by_request_id(request_id: str, back_hours: int = 0) -> TraceSum
     - time_range: 搜到的日志时间范围（帮助判断是否找对了）
     - hint: 当结果可能不完整时给出提示
     """
-    params = {"request_id": request_id, "back_hours": back_hours}
+    # 如果用户提供了时间提示，自动计算 back_hours
+    if hint_time:
+        back_hours = _calc_back_hours(hint_time)
+
+    params = {"request_id": request_id, "back_hours": back_hours, "hint_time": hint_time}
     try:
         raw = await glog_adapter.glog_search(request_id, back_hours)
         lines = [l for l in raw.splitlines() if l.strip()]
@@ -220,15 +275,21 @@ def _build_search_hint(
         hints.append(
             f"[需要用户确认] 未找到任何日志（back_hours={back_hours}）。"
             "请询问用户这个请求大概发生在什么时间，然后用对应的 back_hours 重新搜索。"
-            "例如：用户说'今天上午' → back_hours=12，'昨天' → back_hours=24。"
         )
 
-    elif total < 10 and len(services) <= 2 and back_hours < 8:
+    elif back_hours == 0:
+        # 默认时间范围只搜当前小时，可能搜到同名但时间不对的请求
+        # 必须先告诉用户找到的时间，让用户确认再分析
         hints.append(
-            f"[结果可能不完整] 仅找到 {total} 行日志、{len(services)} 个服务，"
-            f"时间在 {time_range}。正常的微服务链路通常有 20+ 行、3+ 个服务。"
-            "这可能不是用户要找的请求。请询问用户："
-            f"'找到的日志时间是 {time_range}，是这个时间段的请求吗？如果不是，请告诉我大概的时间，我扩大范围重新搜索。'"
+            f"[先确认时间] 找到日志，时间在 {time_range}。"
+            "在分析之前，请先告诉用户这个时间范围，确认是否是他要找的那次请求。"
+            "如果时间不对，根据用户说的时间调整 back_hours 重搜。"
+        )
+
+    elif total < 10 and len(services) <= 2:
+        hints.append(
+            f"[结果可能不完整] 仅找到 {total} 行、{len(services)} 个服务，时间在 {time_range}。"
+            "先告诉用户找到的时间范围，确认是否正确。"
         )
 
     # 有很多重试/错误 —— 提醒关注 hlopen 服务
