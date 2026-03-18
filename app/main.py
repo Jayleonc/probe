@@ -1,14 +1,14 @@
 """
 FastAPI 应用入口
 
-挂载 HTTP 路由和 MCP SSE 传输层。
+挂载 HTTP 路由和 MCP 传输层。
 """
 
 from fastapi import FastAPI
 
 from app.api.routes.health import router as health_router
 from app.mcp.sse import messages_app as mcp_sse_messages_app
-from app.mcp.sse import router as mcp_sse_router
+from app.mcp.sse import router as mcp_router
 
 
 def create_app() -> FastAPI:
@@ -24,12 +24,13 @@ def create_app() -> FastAPI:
         return {
             "name": "probe",
             "version": "0.2.0",
-            "mcp_endpoint": "/mcp/sse",
+            "mcp_sse": "/mcp/sse",
+            "mcp_stream": "/mcp/stream",
             "health": "/health",
         }
 
     app.include_router(health_router)
-    app.include_router(mcp_sse_router, prefix="/mcp")
+    app.include_router(mcp_router, prefix="/mcp")
     app.mount("/mcp/messages/", mcp_sse_messages_app)
 
     return app
